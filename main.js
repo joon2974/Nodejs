@@ -3,38 +3,12 @@ var http = require('http');
 var fs = require('fs');
 var url = require('url');
 var qs = require('querystring');
-
-function templateHTML(title, list, body, control){
-  return `
-  <!doctype html>
-  <html>
-  <head>
-    <title>WEB1 - ${title}</title>
-    <meta charset="utf-8">
-  </head>
-  <body>
-    <h1><a href="/">WEB</a></h1>
-    ${list}
-    ${control}
-    ${body}
-  </body>
-  </html>
-  `;
-}
-
-function templateList(fileList){
-  //list를 자동으로 생성후 리턴
-  var i = 0;
-  var list = '<ul>';
-  //반복문으로 file리스트 자동 생성
-  while(i < fileList.length){
-    list = list + `<li><a = href="/?id=${fileList[i]}">${fileList[i]}</a></li>`;
-    i++;
-  }
-  list = list + '</ul>';
-
-  return list;
-}
+//refactoring, template관련 메소드 2개를 모듈화
+var template = require('./lib/template.js');
+var path = require('path');
+//만약 생성, 수정시 스크립트 코드를 통해 공격을 한다면 무방비
+//sanitize-html 모듈을 이용하여 코드를 필터링
+var sanitizeHtml = require('sanitize-html');
 
 //request: 요청할때 보낸 정보, response: 응답할때 들어오는 정보
 var app = http.createServer(function(request,response){
@@ -54,33 +28,45 @@ var app = http.createServer(function(request,response){
         fs.readdir('./data', function(error, fileList){
           var title = 'Welcome';
           var description = "Hello, Node.js";
-          var list = templateList(fileList);
-          var template = templateHTML(title, list, `<h2>${title}</h2>${description}`, `<a href="/create">create</a>`);
+          var list = template.list(fileList);
+          var html = template.HTML(title, list, `<h2>${title}</h2>${description}`, `<a href="/create">create</a>`);
           response.writeHead(200);
           //Web Page에 내용 출력
-          response.end(template);
+          response.end(html);
         })
         //home 이외의 page
       }else{
         fs.readdir('./data', function(error, fileList){
-        //data디렉토리의 querydata.id파일을 utf-8형식으로 불러와
-        //description에 저장해라
-          fs.readFile(`data/${queryData.id}`, 'utf-8', function(err, description){
+          //parse를 하면 경로 앞의 .//등의 문자를 제외해서 파싱하므로
+          //경로를 타고 올라가서 정보를 빼오는 등의 행위가 불가능
+          //결과값: sample.js라는 파일명만을 변수에 집어넣게 됨
+          var filteredId = path.parse(queryData.id).base;
+          //data디렉토리의 querydata.id파일을 utf-8형식으로 불러와
+          //description에 저장해라
+          fs.readFile(`data/${filteredId}`, 'utf-8', function(err, description){
             //객체의 key값으로 값을 받아옴 ex){id : HTML} -> HTML추출
             var title = queryData.id;
-            var list = templateList(fileList);
+            //입력받는 내용들(title, des)에 공격용 script를 심으면 무방비
+            //따라서 sanitize-html모듈 이용 필터링하는
+            var sanitizedTitle = sanitizeHtml(title);
+            //sanitizeHtml에 두번째 인자로 allowedTags를 주면
+            //그 태그들은 필터링 예외!
+            var sanitizedDescription = sanitizeHtml(description, {
+              allowedTags:['h1']
+            });
+            var list = template.list(fileList);
             //일반 page에는 create, update, delete 세 버튼이 다 있어야 함
-            var template = templateHTML(title, list, `<h2>${title}</h2>${description}`, `<a href="/create">create</a>
-            <a href="/update?id=${title}">update</a>
+            var html = template.HTML(sanitizedTitle, list, `<h2>${sanitizedTitle}</h2>${sanitizedDescription}`, `<a href="/create">create</a>
+            <a href="/update?id=${sanitizedTitle}">update</a>
             <form action="delete_process" method="post">
-              <input type="hidden" name="id" value="${title}">
+              <input type="hidden" name="id" value="${sanitizedTitle}">
               <input type="submit" value="delete">
             </form>
             `);
             //delete 작업의 경우 url로 넘겨주면 보안문제때문에 form으로 바로 넘겨줘서 처리
             response.writeHead(200);
             //Web Page에 내용 출력
-            response.end(template);
+            response.end(html);
           });
         });
       }
@@ -88,8 +74,8 @@ var app = http.createServer(function(request,response){
   } else if(pathname === '/create'){
     fs.readdir('./data', function(error, fileList){
       var title = 'WEB - create';
-      var list = templateList(fileList);
-      var template = templateHTML(title, list, `
+      var list = template.list(fileList);
+      var html = template.HTML(title, list, `
         <form action="/create_process" method="post">
           <p><input type="text" name="title" placeholder="title"></p>
           <p>
@@ -102,7 +88,7 @@ var app = http.createServer(function(request,response){
         `, '');
       response.writeHead(200);
       //Web Page에 내용 출력
-      response.end(template);
+      response.end(html);
     })
   //create_process 처리 (위에서 입력내용을 post로 전송한 곳)
   } else if(pathname === '/create_process'){
@@ -128,13 +114,14 @@ var app = http.createServer(function(request,response){
   } else if(pathname === '/update'){
     //list목록 구현
     fs.readdir('./data', function(error, fileList){
+      var filteredId = path.parse(queryData.id).base;
     //data디렉토리의 querydata.id파일을 utf-8형식으로 불러와
     //description에 저장해라
-      fs.readFile(`data/${queryData.id}`, 'utf-8', function(err, description){
+      fs.readFile(`data/${filteredId}`, 'utf-8', function(err, description){
         //객체의 key값으로 값을 받아옴 ex){id : HTML} -> HTML추출
         var title = queryData.id;
-        var list = templateList(fileList);
-        var template = templateHTML(title, list, `
+        var list = template.list(fileList);
+        var html = template.HTML(title, list, `
           <form action="/update_process" method="post">
           <input type="hidden" name="id" value="${title}">
             <p><input type="text" name="title" placeholder="title" value="${title}"></p>
@@ -150,7 +137,7 @@ var app = http.createServer(function(request,response){
           //hidden은 타이틀을 바꿔버리면 어떤것을 바꾸는건지 지정이 어렵기 때문에 id를 부여
         response.writeHead(200);
         //Web Page에 내용 출력
-        response.end(template);
+        response.end(html);
       });
     });
   } else if(pathname === '/update_process'){
@@ -187,9 +174,10 @@ var app = http.createServer(function(request,response){
       var post = qs.parse(body);
       //delete에서 넘긴 name="id"를 받아서
       var id = post.id;
+      var filteredId = path.parse(id).base;
       //unlink로 data폴더에서 id라는 이름의 파일 삭제
       //그 후 뒤의 함수 callback, 여기서는 홈으로 callback 하게 하였음
-      fs.unlink(`data/${id}`, function(err){
+      fs.unlink(`data/${filteredId}`, function(err){
         response.writeHead(302, {Location : `/`});
         response.end();
       })
